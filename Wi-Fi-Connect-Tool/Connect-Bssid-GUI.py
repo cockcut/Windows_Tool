@@ -958,6 +958,22 @@ class App(tk.Tk):
         self.after(500, self._silent_update_check)
 
     def _build(self) -> None:
+        upd = tk.Frame(self)
+        upd.pack(fill="x", padx=8, pady=(6, 0))
+        self.btn_check_upd = tk.Button(upd, text="업데이트 확인", command=self.on_check_update)
+        self.btn_check_upd.pack(side="left")
+        self.lbl_upd = tk.Label(upd, text="", fg="#666666")
+        self.lbl_upd.pack(side="left", padx=10)
+        self.btn_apply_upd = tk.Button(
+            upd,
+            text="업데이트",
+            command=self._do_update,
+            bg="#d9534f",
+            fg="white",
+            activebackground="#c9302c",
+            activeforeground="white",
+        )
+
         self.lbl_now = tk.Label(self, text="현재 연결: 확인 중...", anchor="w", padx=10, pady=6)
         self.lbl_now.pack(fill="x")
 
@@ -982,19 +998,6 @@ class App(tk.Tk):
         self.var_debug = tk.BooleanVar(value=True)
         self.chk_debug = tk.Checkbutton(bar, text="디버그", variable=self.var_debug)
         self.chk_debug.pack(side="left")
-        self.btn_check_upd = tk.Button(bar, text="업데이트 확인", command=self.on_check_update)
-        self.btn_check_upd.pack(side="left", padx=(12, 2))
-        self.lbl_upd = tk.Label(bar, text="", fg="#666666")
-        self.lbl_upd.pack(side="left")
-        self.btn_apply_upd = tk.Button(
-            bar,
-            text="업데이트",
-            command=self._do_update,
-            bg="#d9534f",
-            fg="white",
-            activebackground="#c9302c",
-            activeforeground="white",
-        )
 
         filt = tk.Frame(self)
         filt.pack(fill="x", padx=8, pady=4)
@@ -1163,13 +1166,9 @@ class App(tk.Tk):
         if info.get("available"):
             self.lbl_upd.configure(text=info.get("message") or "새 버전이 있습니다.")
             self._set_apply_visible(True)
-            if prompt:
-                messagebox.showinfo("업데이트", info.get("message") or "새 버전이 있습니다.")
         else:
             self.lbl_upd.configure(text="최신 버전입니다.")
             self._set_apply_visible(False)
-            if prompt:
-                messagebox.showinfo("업데이트", "최신 버전입니다.")
 
     def _do_update(self) -> None:
         if gh_updater is None:
