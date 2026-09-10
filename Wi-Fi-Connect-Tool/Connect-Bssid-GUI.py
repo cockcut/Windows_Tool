@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Wi-Fi BSSID 접속 GUI (Python). Version 0.0.1"""
+"""Wi-Fi BSSID 접속 GUI (Python). Version v0.0.1"""
 from __future__ import annotations
 
 import ctypes
@@ -20,7 +20,7 @@ from tkinter import filedialog, messagebox
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.0.1"
+APP_VERSION = "v0.0.1"
 MAX_LOG_FILES = 5
 
 if getattr(sys, "frozen", False):
@@ -1124,7 +1124,7 @@ class App(tk.Tk):
     def _on_shown(self) -> None:
         p = init_log()
         self.lbl_logpath.configure(text=f"로그: {p}")
-        self.ui_log(f"세션 로그 시작 v{APP_VERSION}")
+        self.ui_log(f"세션 로그 시작 {APP_VERSION}")
         self.check_location_permission(open_settings=True)
         self.refresh_list(force=True)
 
