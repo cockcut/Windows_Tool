@@ -107,6 +107,18 @@ def first_match(text: str, patterns: list[str]) -> str | None:
     return None
 
 
+def band_from_channel(ch: str) -> str:
+    m = re.search(r"\d+", ch or "")
+    if not m:
+        return ""
+    n = int(m.group(0))
+    if 1 <= n <= 14:
+        return "2.4GHz"
+    if 32 <= n <= 196:
+        return "5GHz"
+    return ""
+
+
 def format_band(text: str) -> str:
     s = (text or "").strip()
     if not s:
@@ -234,7 +246,13 @@ def current_wifi() -> dict:
         if v:
             info["Channel"] = v.strip()
             continue
-        v = first_match(line, [r"(?i)라디오\s*유형\s*:\s*(.+)$", r"(?i)Radio type\s*:\s*(.+)$", r"(?i)송수신 장치 종류\s*:\s*(.+)$"])
+        v = first_match(line, [
+            r"(?i)라디오\s*유형\s*:\s*(.+)$",
+            r"(?i)Radio type\s*:\s*(.+)$",
+            r"무선\s*송수신\s*장치\s*유형\s*:\s*(.+)$",
+            r"송수신\s*장치\s*유형\s*:\s*(.+)$",
+            r"송수신\s*장치\s*종류\s*:\s*(.+)$",
+        ])
         if v:
             info["Radio"] = v.strip()
             continue
@@ -356,8 +374,34 @@ def nearby_networks(do_scan: bool = True) -> list[dict]:
         v = first_match(line, [r"(?i)^\s*Channel\s*:\s*(.+)$", r"^\s*채널\s*:\s*(.+)$"])
         if v:
             pending["Channel"] = v.strip()
+            if not pending.get("Band"):
+                pending["Band"] = band_from_channel(v)
+            continue
+        v = first_match(line, [
+            r"(?i)^\s*Radio type\s*:\s*(.+)$",
+            r"라디오\s*유형\s*:\s*(.+)$",
+            r"무선\s*유형\s*:\s*(.+)$",
+            r"무선\s*송수신\s*장치\s*유형\s*:\s*(.+)$",
+            r"송수신\s*장치\s*유형\s*:\s*(.+)$",
+            r"송수신\s*장치\s*종류\s*:\s*(.+)$",
+        ])
+        if v:
+            pending["Radio"] = v.strip()
+            continue
+        v = first_match(line, [
+            r"(?i)^\s*Band\s*:\s*(.+)$",
+            r"^\s*대역\s*:\s*(.+)$",
+            r"^\s*밴드\s*:\s*(.+)$",
+        ])
+        if v:
+            pending["Band"] = format_band(v)
             continue
     commit()
+    for n in out:
+        if not n.get("Band"):
+            n["Band"] = band_from_channel(n.get("Channel") or "")
+        if n.get("Radio"):
+            n["Radio"] = format_wifi_phy(n["Radio"]) or n["Radio"]
 
     def sig_num(n: dict) -> int:
         m = re.search(r"\d+", n.get("Signal") or "")
@@ -981,8 +1025,13 @@ class App(tk.Tk):
         bar.pack(fill="x", padx=8, pady=(4, 0))
         self.btn_scan = tk.Button(bar, text="다시 스캔", width=10, command=self.refresh_list)
         self.btn_scan.pack(side="left", padx=2)
-        self.btn_connect = tk.Button(bar, text="선택 AP 접속", width=12, command=self.do_connect)
+        self.btn_connect_ssid = tk.Button(bar, text="무선접속", width=10, command=lambda: self.do_connect(False))
+        self.btn_connect_ssid.pack(side="left", padx=2)
+        self.btn_connect = tk.Button(bar, text="선택한 무선 접속", width=14, command=lambda: self.do_connect(True))
         self.btn_connect.pack(side="left", padx=2)
+        self.var_wlanconnect = tk.BooleanVar(value=True)
+        self.chk_wlanconnect = tk.Checkbutton(bar, text="WlanConnect", variable=self.var_wlanconnect)
+        self.chk_wlanconnect.pack(side="left", padx=(2, 6))
         self.btn_disc = tk.Button(bar, text="연결 끊기", width=10, command=self.do_disconnect)
         self.btn_disc.pack(side="left", padx=2)
         self.btn_del = tk.Button(bar, text="프로필 삭제", width=10, command=self.do_delete)
@@ -1550,7 +1599,7 @@ class App(tk.Tk):
         except Exception as e:
             self.ui_log(str(e), "ERR")
 
-    def do_connect(self) -> None:
+    def do_connect(self, pin_bssid: bool = True) -> None:
         n = self.selected_net()
         if not n:
             messagebox.showinfo("안내", "목록에서 BSSID를 선택하세요.")
@@ -1567,10 +1616,14 @@ class App(tk.Tk):
         mp = map_auth(n.get("Auth", ""), n.get("Encrypt", ""))
         pw = self.var_pw.get()
         user = self.var_user.get()
-        self.ui_log(f"connect start ssid='{ssid}' bssid={n['Bssid']} hidden={n.get('Hidden')} auth={n.get('Auth')} enc={n.get('Encrypt')} user='{user.strip()}' pw_len={len(pw)} profile={resolve_profile(ssid) or '-'}", "DEBUG")
+        if pin_bssid:
+            self.ui_log(f"connect start mode=BSSID ssid='{ssid}' want={n['Bssid']} hidden={n.get('Hidden')} auth={n.get('Auth')} enc={n.get('Encrypt')} user='{user.strip()}' pw_len={len(pw)} profile={resolve_profile(ssid) or '-'}", "DEBUG")
+        else:
+            self.ui_log(f"connect start mode=SSID ssid='{ssid}' (BSSID 미지정) hidden={n.get('Hidden')} auth={n.get('Auth')} enc={n.get('Encrypt')} user='{user.strip()}' pw_len={len(pw)} profile={resolve_profile(ssid) or '-'}", "DEBUG")
         self.ui_log("interfaces: " + format_debug(current_wifi()), "DEBUG")
         self.busy = True
         self.btn_connect.configure(state="disabled")
+        self.btn_connect_ssid.configure(state="disabled")
         try:
             prof = resolve_profile(ssid)
             if not prof:
@@ -1586,7 +1639,7 @@ class App(tk.Tk):
                 prof = resolve_profile(ssid)
                 if not prof:
                     raise RuntimeError("프로필을 만들지 못했습니다.")
-                self.ui_log("프로필 생성 완료 → 지정 BSSID로 접속합니다")
+                self.ui_log("프로필 생성 완료 → 접속을 시도합니다")
             else:
                 need_update = False
                 if mp["Enterprise"]:
@@ -1597,19 +1650,19 @@ class App(tk.Tk):
                     if has_id and has_pw:
                         need_update = True
                     else:
-                        self.ui_log(f"저장된 802.1X 프로필로 BSSID 접속: {prof} / {n['Bssid']}")
+                        self.ui_log(f"저장된 802.1X 프로필로 접속: {prof}")
                 elif mp["NeedKey"]:
                     if not pw:
-                        self.ui_log(f"저장된 Personal 프로필로 BSSID 접속: {prof} / {n['Bssid']}")
+                        self.ui_log(f"저장된 Personal 프로필로 접속: {prof}")
                     elif len(pw) >= 8:
                         need_update = True
                     else:
                         raise RuntimeError("변경할 Personal Passphrase는 8자리 이상이어야 합니다.")
                 if need_update:
                     if mp["NeedKey"]:
-                        self.ui_log("입력한 Passphrase로 프로필을 갱신한 뒤 해당 BSSID에 접속합니다")
+                        self.ui_log("입력한 Passphrase로 프로필을 갱신한 뒤 접속합니다")
                     else:
-                        self.ui_log("입력한 ID/암호로 프로필을 갱신한 뒤 해당 BSSID에 접속합니다")
+                        self.ui_log("입력한 ID/암호로 프로필을 갱신한 뒤 접속합니다")
                     self.ui_log(update_wifi_credentials(ssid, n, pw, user))
                     prof = resolve_profile(ssid)
                     if not prof:
@@ -1621,7 +1674,9 @@ class App(tk.Tk):
                 pass
             self._conn_ssid = ssid
             self._conn_prof = prof
-            self._conn_want = normalize_mac(n["Bssid"])
+            self._conn_pin_bssid = bool(pin_bssid)
+            self._conn_wlan_only = bool(pin_bssid and self.var_wlanconnect.get())
+            self._conn_want = normalize_mac(n["Bssid"]) if pin_bssid else ""
             self._conn_enterprise = bool(mp["Enterprise"])
             self._conn_bssid_locked = False
             self._conn_bssid_retried = False
@@ -1631,37 +1686,50 @@ class App(tk.Tk):
             self._conn_cancel = False
             self._conn_max = 40 if mp["Enterprise"] else 12
             self._conn_auth_max = 25 if mp["Enterprise"] else 5
-            self.ui_log(f"BSSID 접속 요청: {ssid} / {n['Bssid']}  (profile={prof})")
-            threading.Thread(target=self._issue_connect, args=(prof, ssid, n["Bssid"], bool(mp["Enterprise"])), daemon=True).start()
+            if pin_bssid:
+                mode = "WlanConnect만" if self._conn_wlan_only else "WlanConnect+netsh"
+                self.ui_log(f"선택한 무선 접속({mode}): {ssid} / {n['Bssid']}  (profile={prof})")
+            else:
+                self.ui_log(f"무선접속(SSID, Windows 자동선택): {ssid}  (profile={prof})")
+            threading.Thread(target=self._issue_connect, args=(prof, ssid, n["Bssid"], bool(mp["Enterprise"]), bool(pin_bssid)), daemon=True).start()
         except Exception as e:
             self.ui_log(str(e), "ERR")
             messagebox.showerror("접속 실패", str(e))
             self._finish_op()
 
-    def _issue_connect(self, prof: str, ssid: str, bssid: str, enterprise: bool) -> None:
+    def _issue_connect(self, prof: str, ssid: str, bssid: str, enterprise: bool, pin_bssid: bool = True) -> None:
         ns = ""
         rc = -1
         err = None
         try:
-            want = normalize_mac(bssid)
+            want = normalize_mac(bssid) if pin_bssid else ""
             cur = current_wifi()
             cur_mac = normalize_mac(cur.get("Bssid") or "")
             cur_ssid = cur.get("Ssid") or ""
-            if is_connected(cur) and cur_ssid == ssid:
+            if is_connected(cur) and pin_bssid and cur_ssid == ssid and cur_mac == want:
                 self.after(0, lambda c=dict(cur): self._finish_ssid_autoselect(c))
                 return
-            if is_connected(cur) and cur_mac and cur_mac != want:
-                self.after(0, lambda m=cur_mac: self.ui_log(f"다른 SSID에 연결 중({m}) → 끊고 {ssid} 로 접속"))
+            if is_connected(cur) and (cur_ssid != ssid or (pin_bssid and cur_mac and cur_mac != want)):
+                self.after(0, lambda m=cur_mac: self.ui_log(f"다른 AP에 연결 중({m}) → 끊고 접속"))
                 wlan_disconnect()
                 for _ in range(12):
                     time.sleep(0.25)
                     if not is_connected(current_wifi()):
                         break
-            if enterprise:
+            if not pin_bssid:
+                rc = wlan_connect_profile(prof)
+                ns = netsh(["wlan", "connect", f"name={prof}", f"ssid={ssid}"]).strip()
+                self.after(0, lambda b=rc, n=ns: self.ui_log(
+                    f"무선접속: WlanConnect(profile) rc={b} / netsh wlan connect (Windows가 AP 선택)", "DEBUG"
+                ))
+            elif getattr(self, "_conn_wlan_only", True):
+                rc = wlan_connect_bssid(prof, bssid, ssid)
+                self.after(0, lambda a=rc: self.ui_log(f"선택한 무선 접속: WlanConnect(BSSID)만 rc={a}", "DEBUG"))
+            elif enterprise:
                 rc_b = wlan_connect_bssid(prof, bssid, ssid)
                 rc = wlan_connect_profile(prof)
                 ns = netsh(["wlan", "connect", f"name={prof}", f"ssid={ssid}"]).strip()
-                self.after(0, lambda a=rc_b, b=rc: self.ui_log(f"802.1X 접속 profile={b} bssid_req={a} (저장된 계정)", "DEBUG"))
+                self.after(0, lambda a=rc_b, b=rc: self.ui_log(f"802.1X 접속 profile={b} bssid_req={a}", "DEBUG"))
                 if rc != 0 and rc_b == 0:
                     rc = 0
             else:
@@ -1682,7 +1750,10 @@ class App(tk.Tk):
             self._finish_op()
             return
         if ns:
-            self.ui_log(f"netsh connect: {ns}")
+            if getattr(self, "_conn_pin_bssid", False):
+                self.ui_log(f"netsh connect: {ns}")
+            else:
+                self.ui_log(f"netsh wlan connect (Windows 자동선택): {ns}")
         if rc in (87, 1168):
             self.ui_log(f"WlanConnect 초기 코드 {rc} (인증 완료 대기 중...)", "WARN")
             self.after(800, self._poll_connect_start)
@@ -1710,17 +1781,30 @@ class App(tk.Tk):
         )
         self.apply_link_to_tree(cur)
         want = getattr(self, "_conn_want", "")
-        self.ui_log(
-            f"연결됨 SSID={cur.get('Ssid')} BSSID={cur.get('Bssid')} (요청 {want}). "
-            "SSID접속은 Windows가 AP를 자동선택해서 연결합니다.",
-            "OK",
-        )
+        cur_mac = normalize_mac(cur.get("Bssid") or "")
+        if getattr(self, "_conn_pin_bssid", False) and want and cur_mac == want:
+            self.ui_log(f"선택한 BSSID에 연결되었습니다. SSID={cur.get('Ssid')} BSSID={cur.get('Bssid')}", "OK")
+        elif getattr(self, "_conn_pin_bssid", False):
+            self.ui_log(
+                f"선택한 BSSID에 연결되지 못했습니다. WLC에 Band-steering 기능이 있거나, "
+                f"Windows가 AP를 자동선택해서 연결되었습니다. "
+                f"SSID={cur.get('Ssid')} BSSID={cur.get('Bssid')} (요청 {want})",
+                "WARN",
+            )
+        else:
+            self.ui_log(
+                f"SSID접속은 Windows가 AP를 자동선택해서 연결되었습니다. "
+                f"SSID={cur.get('Ssid')} BSSID={cur.get('Bssid')}",
+                "OK",
+            )
         self._finish_op()
 
     def _finish_op(self) -> None:
         self.busy = False
         self._conn_cancel = True
         self.btn_connect.configure(state="normal")
+        if hasattr(self, "btn_connect_ssid"):
+            self.btn_connect_ssid.configure(state="normal")
 
     def _cancel_connect_wait(self, reason: str) -> None:
         self._conn_cancel = True
@@ -1760,7 +1844,7 @@ class App(tk.Tk):
             auth_max = getattr(self, "_conn_auth_max", 5)
             if i == 1 or i % 5 == 0 or is_connected(cur) or is_authenticating(cur):
                 self.ui_log(f"대기 {i}/{total}  state={cur['State']} bssid={cur['Bssid']}")
-            if (getattr(self, "_conn_enterprise", False) and i == 4 and not is_connected(cur) and not is_authenticating(cur) and not getattr(self, "_conn_ssid_fallback", False)):
+            if (getattr(self, "_conn_enterprise", False) and getattr(self, "_conn_pin_bssid", False) and not getattr(self, "_conn_wlan_only", False) and i == 4 and not is_connected(cur) and not is_authenticating(cur) and not getattr(self, "_conn_ssid_fallback", False)):
                 self._conn_ssid_fallback = True
                 prof = getattr(self, "_conn_prof", self._conn_ssid)
                 ssid = getattr(self, "_conn_ssid", "")
@@ -1768,16 +1852,28 @@ class App(tk.Tk):
                 threading.Thread(target=lambda: (wlan_connect_profile(prof), netsh(["wlan", "connect", f"name={prof}", f"ssid={ssid}"])), daemon=True).start()
             same_bssid = normalize_mac(cur.get("Bssid") or "") == self._conn_want
             same_ssid = (cur.get("Ssid") or "") == getattr(self, "_conn_ssid", "")
-            if is_connected(cur) and same_bssid:
+            if is_connected(cur) and same_ssid and (same_bssid or not getattr(self, "_conn_pin_bssid", False)):
                 self.lbl_now.configure(text=f"현재 연결: SSID={cur['Ssid']}   BSSID={cur['Bssid']}   신호={cur['Signal']}   CH={cur['Channel']}   {cur['Radio']}", fg="#006400")
                 self.apply_link_to_tree(cur)
-                self.ui_log(f"연결됨  SSID={cur.get('Ssid')}  BSSID={cur.get('Bssid')}", "OK")
+                if getattr(self, "_conn_pin_bssid", False) and same_bssid:
+                    self.ui_log(f"선택한 BSSID에 연결되었습니다. SSID={cur.get('Ssid')} BSSID={cur.get('Bssid')}", "OK")
+                else:
+                    self.ui_log(
+                        f"SSID접속은 Windows가 AP를 자동선택해서 연결되었습니다. "
+                        f"SSID={cur.get('Ssid')} BSSID={cur.get('Bssid')}",
+                        "OK",
+                    )
                 self._finish_op()
                 return
             if is_connected(cur) and same_ssid and not same_bssid:
                 self.lbl_now.configure(text=f"현재 연결: SSID={cur['Ssid']}   BSSID={cur['Bssid']}   신호={cur['Signal']}   CH={cur['Channel']}   {cur['Radio']}", fg="#006400")
                 self.apply_link_to_tree(cur)
-                self.ui_log(f"연결됨 SSID={cur.get('Ssid')} BSSID={cur.get('Bssid')} (요청 {self._conn_want}). SSID접속은 Windows가 AP를 자동선택해서 연결합니다.", "OK")
+                self.ui_log(
+                    f"선택한 BSSID에 연결되지 못했습니다. WLC에 Band-steering 기능이 있거나, "
+                    f"Windows가 AP를 자동선택해서 연결되었습니다. "
+                    f"SSID={cur.get('Ssid')} BSSID={cur.get('Bssid')} (요청 {self._conn_want})",
+                    "WARN",
+                )
                 self._finish_op()
                 return
             if is_authenticating(cur):
