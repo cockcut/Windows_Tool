@@ -31,6 +31,8 @@ SHA_FILE_NAME = ".update_sha"
 REPO_DIR = "Wi-Fi-Connect-Tool"
 APP_PY = "Connect-Bssid-GUI.py"
 EXE_NAME = "Connect-Bssid-GUI.exe"
+EXE_SHA_NAME = f"{EXE_NAME}.sha256"
+RELEASE_DOWNLOAD = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest/download"
 
 SKIP_DIR_NAMES = {".git", "__pycache__", "results", "upload", ".grok", "windows_devel"}
 SKIP_FILE_NAMES = {
@@ -147,6 +149,34 @@ def _norm_ver(s: str) -> str:
     return t.lower()
 
 
+def parse_sha256_text(text: str) -> str:
+    for raw in (text or "").replace("\r", "\n").split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        token = line.split()[0].strip().lower().replace("sha256:", "")
+        if len(token) == 64 and all(c in "0123456789abcdef" for c in token):
+            return token
+    return ""
+
+
+def remote_exe_urls() -> tuple[str, str]:
+    base = RELEASE_DOWNLOAD.rstrip("/")
+    return f"{base}/{EXE_SHA_NAME}", f"{base}/{EXE_NAME}"
+
+
+def fetch_remote_exe_sha256() -> str:
+    sha_url, _ = remote_exe_urls()
+    r = _get(sha_url, timeout=20)
+    if r.status_code != 200 or not (r.text or r.content):
+        raise RuntimeError(f"릴리스에서 {EXE_SHA_NAME} 을 받지 못했습니다. (HTTP {r.status_code})")
+    text = r.text if getattr(r, "text", "") else (r.content or b"").decode("utf-8", "replace")
+    digest = parse_sha256_text(text)
+    if not digest:
+        raise RuntimeError(f"{EXE_SHA_NAME} 형식이 올바르지 않습니다.")
+    return digest
+
+
 def find_remote_exe() -> dict:
     r = _get(API_RELEASES, timeout=15)
     if r.status_code == 200:
@@ -234,17 +264,31 @@ def remote_exe_hash_matches(exe_path: Path, remote_info: dict) -> bool:
 def check_update(root: Path, frozen: bool = False, current_version: str = "", exe_path: str = "") -> dict:
     try:
         if frozen:
-            remote_info = find_remote_exe()
-            remote = remote_info["id"]
+            sha_url, exe_url = remote_exe_urls()
+            remote = fetch_remote_exe_sha256()
+            exe = Path(exe_path) if exe_path else (Path(root) / EXE_NAME)
+            local = ""
+            if exe.is_file():
+                local = file_sha256(exe.read_bytes())
             extra = {
-                "exe_url": remote_info["url"],
-                "url": remote_info["url"],
-                "exe_name": remote_info["name"],
-                "exe_size": remote_info["size"],
-                "tag": remote_info.get("tag") or "",
-                "digest": remote_info.get("digest") or "",
-                "git_sha": remote_info.get("git_sha") or "",
-                "id": remote_info.get("id") or "",
+                "exe_url": exe_url,
+                "url": exe_url,
+                "sha_url": sha_url,
+                "exe_name": EXE_NAME,
+                "digest": remote,
+                "id": remote,
+            }
+            available = bool(remote) and bool(local) and remote != local
+            if not exe.is_file():
+                available = bool(remote)
+            return {
+                "ok": True,
+                "available": available,
+                "local": local,
+                "remote": remote,
+                "frozen": True,
+                "message": "새 exe가 있습니다." if available else "최신 버전입니다.",
+                **extra,
             }
         else:
             rsrc = _get(f"{API_CONTENTS}/{REPO_DIR}/{APP_PY}?ref={GITHUB_BRANCH}", timeout=15)
@@ -271,21 +315,12 @@ def check_update(root: Path, frozen: bool = False, current_version: str = "", ex
 
     local = read_local_sha(root)
     if (not local) and remote:
-        if frozen:
-            exe = Path(exe_path) if exe_path else (Path(root) / EXE_NAME)
-            if remote_exe_hash_matches(exe, remote_info):
-                write_local_sha(root, remote)
-                local = remote
-        else:
-            if app_py_sha256_matches(root):
-                write_local_sha(root, remote)
-                local = remote
+        if app_py_sha256_matches(root):
+            write_local_sha(root, remote)
+            local = remote
 
     available = bool(remote) and remote != local
-    if frozen:
-        msg = "새 exe가 있습니다." if available else "최신 버전입니다."
-    else:
-        msg = "새 버전이 있습니다." if available else "최신 버전입니다."
+    msg = "새 버전이 있습니다." if available else "최신 버전입니다."
     out = {
         "ok": True,
         "available": available,
@@ -351,17 +386,19 @@ def apply_exe_update(root: Path, exe_path: str, info: dict | None = None) -> dic
     root = Path(root)
     exe_path = Path(exe_path)
     info = info or {}
-    url = info.get("url") or info.get("exe_url")
-    remote_id = info.get("remote") or info.get("id") or ""
-    if not url:
-        found = find_remote_exe()
-        url = found["url"]
-        remote_id = found["id"]
+    sha_url, default_exe_url = remote_exe_urls()
+    url = info.get("url") or info.get("exe_url") or default_exe_url
+    expect = (info.get("digest") or info.get("remote") or "").lower().replace("sha256:", "").strip()
+    if not expect:
+        expect = fetch_remote_exe_sha256()
     r = _get(url, timeout=180, stream=True)
     r.raise_for_status()
     data = r.content
     if not data or data[:2] != b"MZ":
         return {"ok": False, "message": "받은 파일이 Windows exe가 아닙니다."}
+    got = file_sha256(data)
+    if expect and got != expect:
+        return {"ok": False, "message": f"받은 exe SHA-256이 {EXE_SHA_NAME} 과 다릅니다."}
     new_path = exe_path.with_suffix(exe_path.suffix + ".new")
     new_path.write_bytes(data)
     bat = root / "_replace_exe.bat"
@@ -382,13 +419,11 @@ def apply_exe_update(root: Path, exe_path: str, info: dict | None = None) -> dic
         ),
         encoding="ascii",
     )
-    if remote_id:
-        write_local_sha(root, remote_id)
     return {
         "ok": True,
         "message": "새 exe를 받았습니다. 종료 후 자동으로 교체·재실행됩니다.",
         "replace_bat": str(bat),
-        "sha": remote_id,
+        "sha": expect or got,
     }
 
 
